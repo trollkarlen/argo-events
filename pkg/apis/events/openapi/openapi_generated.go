@@ -5202,12 +5202,42 @@ func schema_pkg_apis_events_v1alpha1_MQTTEventSource(ref common.ReferenceCallbac
 							Ref:         ref("github.com/argoproj/argo-events/pkg/apis/events/v1alpha1.BasicAuth"),
 						},
 					},
+					"httpHeaders": {
+						SchemaProps: spec.SchemaProps{
+							Description: "HTTPHeaders is a map of HTTP headers to send on the WebSocket upgrade handshake. Only takes effect when URL is ws:// or wss:// (the underlying paho.mqtt.golang client only consults headers on WebSocket transports). Useful for brokers that authenticate via the HTTP layer rather than via the MQTT CONNECT packet, e.g. \"Authorization: Bearer <token>\" against an OAuth-fronted broker. Values here are treated as literal strings; for secret values (tokens, etc.) prefer HTTPHeadersFrom which sources them from k8s Secrets.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"httpHeadersFrom": {
+						SchemaProps: spec.SchemaProps{
+							Description: "HTTPHeadersFrom is a map of HTTP header name to k8s Secret key selector. The secret value is read at connect time and sent on the WebSocket upgrade handshake. Use this for credentials so the EventSource YAML stays free of secrets. Headers in this map take precedence over identically-named entries in HTTPHeaders.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("k8s.io/api/core/v1.SecretKeySelector"),
+									},
+								},
+							},
+						},
+					},
 				},
 				Required: []string{"url", "topic", "clientId"},
 			},
 		},
 		Dependencies: []string{
-			"github.com/argoproj/argo-events/pkg/apis/events/v1alpha1.Backoff", "github.com/argoproj/argo-events/pkg/apis/events/v1alpha1.BasicAuth", "github.com/argoproj/argo-events/pkg/apis/events/v1alpha1.EventSourceFilter", "github.com/argoproj/argo-events/pkg/apis/events/v1alpha1.TLSConfig"},
+			"github.com/argoproj/argo-events/pkg/apis/events/v1alpha1.Backoff", "github.com/argoproj/argo-events/pkg/apis/events/v1alpha1.BasicAuth", "github.com/argoproj/argo-events/pkg/apis/events/v1alpha1.EventSourceFilter", "github.com/argoproj/argo-events/pkg/apis/events/v1alpha1.TLSConfig", "k8s.io/api/core/v1.SecretKeySelector"},
 	}
 }
 

@@ -537,6 +537,24 @@ type MQTTEventSource struct {
 	// Auth hosts secret selectors for username and password
 	// +optional
 	Auth *BasicAuth `json:"auth,omitempty" protobuf:"bytes,9,opt,name=auth"`
+	// HTTPHeaders is a map of HTTP headers to send on the WebSocket
+	// upgrade handshake. Only takes effect when URL is ws:// or wss://
+	// (the underlying paho.mqtt.golang client only consults headers on
+	// WebSocket transports). Useful for brokers that authenticate via
+	// the HTTP layer rather than via the MQTT CONNECT packet, e.g.
+	// "Authorization: Bearer <token>" against an OAuth-fronted broker.
+	// Values here are treated as literal strings; for secret values
+	// (tokens, etc.) prefer HTTPHeadersFrom which sources them from
+	// k8s Secrets.
+	// +optional
+	HTTPHeaders map[string]string `json:"httpHeaders,omitempty" protobuf:"bytes,10,rep,name=httpHeaders"`
+	// HTTPHeadersFrom is a map of HTTP header name to k8s Secret key
+	// selector. The secret value is read at connect time and sent on
+	// the WebSocket upgrade handshake. Use this for credentials so the
+	// EventSource YAML stays free of secrets. Headers in this map take
+	// precedence over identically-named entries in HTTPHeaders.
+	// +optional
+	HTTPHeadersFrom map[string]*corev1.SecretKeySelector `json:"httpHeadersFrom,omitempty" protobuf:"bytes,11,rep,name=httpHeadersFrom"`
 }
 
 // NATSEventsSource refers to event-source for NATS related events

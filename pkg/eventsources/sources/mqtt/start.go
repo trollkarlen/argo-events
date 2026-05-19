@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"time"
 
 	mqttlib "github.com/eclipse/paho.mqtt.golang"
@@ -123,6 +124,37 @@ func (el *EventListener) StartListening(ctx context.Context, dispatch func([]byt
 		}
 		opts.SetUsername(username)
 		opts.SetPassword(password)
+	}
+
+	// HTTP headers on the WebSocket upgrade handshake (paho only
+	// consults these for ws:// and wss:// schemes — for tcp:// / ssl://
+	// the headers are silently ignored, which is the right thing).
+	// Useful when the broker authenticates at the HTTP layer rather
+	// than via the MQTT CONNECT packet, e.g. an OAuth-fronted broker
+	// expecting "Authorization: Bearer <jwt>".
+	//
+	// HTTPHeaders supplies literal values; HTTPHeadersFrom supplies
+	// values from k8s Secrets and overrides identically-named entries
+	// from HTTPHeaders so the secret-sourced version always wins.
+	if len(mqttEventSource.HTTPHeaders) > 0 || len(mqttEventSource.HTTPHeadersFrom) > 0 {
+		hdr := make(http.Header, len(mqttEventSource.HTTPHeaders)+len(mqttEventSource.HTTPHeadersFrom))
+		for k, v := range mqttEventSource.HTTPHeaders {
+			hdr.Set(k, v)
+		}
+		for k, sel := range mqttEventSource.HTTPHeadersFrom {
+			if sel == nil {
+				continue
+			}
+			v, err := sharedutil.GetSecretFromVolume(sel)
+			if err != nil {
+				return fmt.Errorf("header %q value from secret %s/%s not found, %w", k, sel.Name, sel.Key, err)
+			}
+			hdr.Set(k, v)
+		}
+		opts.SetHTTPHeaders(hdr)
+		log.Infow("set HTTP headers on WebSocket upgrade",
+			zap.Int("literalCount", len(mqttEventSource.HTTPHeaders)),
+			zap.Int("secretCount", len(mqttEventSource.HTTPHeadersFrom)))
 	}
 
 	var client mqttlib.Client

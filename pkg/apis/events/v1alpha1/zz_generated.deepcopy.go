@@ -2652,6 +2652,29 @@ func (in *MQTTEventSource) DeepCopyInto(out *MQTTEventSource) {
 		*out = new(BasicAuth)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.HTTPHeaders != nil {
+		in, out := &in.HTTPHeaders, &out.HTTPHeaders
+		*out = make(map[string]string, len(*in))
+		for key, val := range *in {
+			(*out)[key] = val
+		}
+	}
+	if in.HTTPHeadersFrom != nil {
+		in, out := &in.HTTPHeadersFrom, &out.HTTPHeadersFrom
+		*out = make(map[string]*v1.SecretKeySelector, len(*in))
+		for key, val := range *in {
+			var outVal *v1.SecretKeySelector
+			if val == nil {
+				(*out)[key] = nil
+			} else {
+				inVal := (*in)[key]
+				in, out := &inVal, &outVal
+				*out = new(v1.SecretKeySelector)
+				(*in).DeepCopyInto(*out)
+			}
+			(*out)[key] = outVal
+		}
+	}
 	return
 }
 

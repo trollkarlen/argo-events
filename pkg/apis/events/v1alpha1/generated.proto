@@ -1958,6 +1958,23 @@ message MQTTEventSource {
   // Auth hosts secret selectors for username and password
   // +optional
   optional BasicAuth auth = 9;
+
+  // HTTPHeaders is a map of HTTP headers to send on the WebSocket
+  // upgrade handshake. Only takes effect when URL is ws:// or wss://.
+  // Useful for brokers that authenticate via the HTTP layer (e.g.
+  // "Authorization: Bearer <token>") rather than via the MQTT CONNECT
+  // packet. Values here are treated as literal strings; for secret
+  // values prefer HTTPHeadersFrom.
+  // +optional
+  map<string, string> httpHeaders = 10;
+
+  // HTTPHeadersFrom is a map of HTTP header name to k8s Secret key
+  // selector. The secret value is read at connect time and sent on
+  // the WebSocket upgrade handshake. Use this for credentials so the
+  // EventSource YAML stays free of secrets. Headers in this map take
+  // precedence over identically-named entries in HTTPHeaders.
+  // +optional
+  map<string, k8s.io.api.core.v1.SecretKeySelector> httpHeadersFrom = 11;
 }
 
 // Metadata holds the annotations and labels of an event source pod
