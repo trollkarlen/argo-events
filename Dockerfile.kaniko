@@ -1,0 +1,172 @@
+# Self-contained multi-stage Dockerfile for kaniko-driven builds. The
+# upstream Dockerfile assumes the binary was built externally (`make
+# dist/argo-events-linux-amd64` then `COPY dist/...`), which isn't
+# possible from inside a kaniko-only CI runner. This file is a parallel
+# spelling that produces an identical runtime image but does the Go
+# build in a builder stage so kaniko can drive the whole thing
+# end-to-end.
+#
+# Why a separate file: keeps the upstream Dockerfile diff-free for the
+# eventual upstream PR. This file lives only on the fork branch.
+#
+# Targets:
+#   --target argo-events   final scratch image (the controller binary)
+#
+# Build args:
+#   ARCH               TARGETARCH, defaults to amd64 from BuildKit's
+#                      cross-platform context. Set explicitly for
+#                      reproducibility.
+#   ARGO_VERSION       argo-workflows CLI version to embed in the
+#                      image (the controller pod uses it to submit
+#                      workflows from Sensors). Default matches the
+#                      pinned version in the upstream Dockerfile.
+#   REGISTRY_MIRROR    optional pull-through-cache prefix for Docker
+#                      Hub bases. Empty by default; the chart's CI sets
+#                      it to a corporate mirror so anonymous pulls
+#                      don't hit Hub's rate limit.
+#   HTTP_PROXY / HTTPS_PROXY / NO_PROXY  forwarded to RUN steps for
+#                      builds behind a corporate proxy. The Go module
+#                      download in the builder stage and the alpine
+#                      package fetches in the base stage both honor
+#                      these via stdlib http.ProxyFromEnvironment /
+#                      apk's transparent proxy support.
+#
+# Pinned versions match the upstream Dockerfile (alpine 3.16.2,
+# argo-workflows v3.7.7) so the runtime image is byte-identical to
+# upstream apart from the embedded /bin/argo-events binary built from
+# this fork.
+
+ARG ARCH=amd64
+ARG ARGO_VERSION=v3.7.7
+ARG REGISTRY_MIRROR=""
+
+####################################################################################################
+# builder — compile /argo-events from source
+####################################################################################################
+FROM ${REGISTRY_MIRROR}golang:1.24-alpine AS builder
+ARG ARCH
+# Proxy build-args — declared so `--build-arg HTTP_PROXY=...` flags
+# from CI take effect inside the RUN steps. ARG (not ENV) so they do
+# NOT persist into the final scratch image. Both UPPERCASE and
+# lowercase variants declared because Go's net/http and the standard
+# Linux toolchain look at the uppercase forms while busybox `wget`
+# (used in the base stage below) reads the lowercase forms; alpine's
+# `apk` honors both. Empty default = no effect when the runner has
+# direct network access.
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+ARG http_proxy
+ARG https_proxy
+ARG no_proxy
+
+# Match the Makefile's stripped, statically-linked build settings:
+# CGO_ENABLED=0 + -ldflags injecting version/commit metadata. Without
+# CGO=0 the resulting binary would dynamic-link to musl, which doesn't
+# work in the FROM scratch final stage.
+
+# Install build deps. `make` and `git` for any go-generate hooks the
+# build pulls in; tzdata isn't needed in the builder.
+RUN apk add --no-cache git make ca-certificates
+
+WORKDIR /src
+
+# Cache the module download as its own layer so source-only edits
+# don't re-fetch the dependency graph (~150 MB).
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy the rest of the source.
+COPY . .
+
+# Build. The Makefile's LDFLAGS embed:
+#   -X github.com/argoproj/argo-events.version=<ver>
+#   -X github.com/argoproj/argo-events.buildDate=<rfc3339>
+#   -X github.com/argoproj/argo-events.gitCommit=<sha>
+# We approximate them with the values kaniko has at build time. gitTag
+# is omitted (Makefile only sets it when a tag matches HEAD; on a fork
+# branch it's empty).
+ARG VERSION=v1.9.10-wcib.1
+RUN BUILD_DATE="$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+ && GIT_COMMIT="$(git rev-parse HEAD 2>/dev/null || echo unknown)" \
+ && CGO_ENABLED=0 GOOS=linux GOARCH=${ARCH} \
+    go build \
+      -v \
+      -ldflags "-X github.com/argoproj/argo-events.version=${VERSION} \
+                -X github.com/argoproj/argo-events.buildDate=${BUILD_DATE} \
+                -X github.com/argoproj/argo-events.gitCommit=${GIT_COMMIT} \
+                -X github.com/argoproj/argo-events.gitTreeState=clean" \
+      -o /out/argo-events \
+      ./cmd
+
+####################################################################################################
+# base — alpine layer carrying the argo CLI + ca-certificates + tzdata
+####################################################################################################
+FROM ${REGISTRY_MIRROR}alpine:3.16.2 AS base
+ARG ARCH
+ARG ARGO_VERSION
+# Proxy build-args — busybox `wget` (used to fetch the argo CLI tarball
+# below) reads the lowercase env vars; alpine's `apk` (above, in the
+# RUN that installs ca-certificates / tzdata) honors both. Same
+# rationale as the builder stage — ARG not ENV so they don't leak
+# into the final image; empty default = no effect when direct network
+# is available.
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+ARG http_proxy
+ARG https_proxy
+ARG no_proxy
+# Don't `apk upgrade` here — under kaniko on a runner that mounts
+# /var/run/docker.sock into the build context (the GitLab DinD setup),
+# the alpine-baselayout package upgrade fails on
+#   rm: can't remove '/var/run/docker.sock': Resource busy
+# because the package's pre-upgrade hook tries to recreate /var/run as
+# a fresh directory. Upstream argo-events uses docker buildx and
+# doesn't hit this; we use kaniko, so skip the upgrade. The base image
+# tag is already pinned (alpine:3.16.2), so security updates land via
+# bumping that pin in lockstep with upstream's Dockerfile, not via a
+# floating `apk upgrade` at build time.
+RUN apk update && \
+    apk add ca-certificates curl && \
+    apk --no-cache add tzdata
+
+# Pull the argo CLI matching the upstream Dockerfile's pinned version.
+# Sensor-controller pods invoke `argo submit` to create Workflows from
+# trigger templates. The version the controller embeds is independent
+# of the argo-server image's argocli — it's fine for them to differ.
+#
+# Use curl rather than busybox wget: behind some HTTP proxies wget's
+# CONNECT handling chokes on trailing slashes in the proxy URL (the
+# Ericsson runners set HTTP_PROXY=http://host:port/ with a trailing
+# slash and busybox wget treats it as a literal target path). curl
+# normalises the URL and follows redirects (--location), which the
+# argo CLI download relies on (github.com/.../releases/download/
+# always 302s to objects.githubusercontent.com).
+#
+# --fail to non-zero exit on HTTP >= 400 (busybox wget silently
+# accepts 404 and writes a HTML error page to disk).
+# --silent --show-error to keep the build log clean on success but
+# print a real error message on failure.
+RUN curl --fail --silent --show-error --location \
+    --output argo-linux-${ARCH}.gz \
+    "https://github.com/argoproj/argo-workflows/releases/download/${ARGO_VERSION}/argo-linux-${ARCH}.gz" && \
+    gunzip -f argo-linux-${ARCH}.gz && \
+    chmod +x argo-linux-${ARCH} && \
+    mv ./argo-linux-${ARCH} /usr/local/bin/argo
+
+# Stage the freshly compiled binary alongside the CLI so the final
+# stage can grab everything from one place.
+COPY --from=builder /out/argo-events /bin/argo-events
+RUN chmod +x /bin/argo-events
+
+####################################################################################################
+# argo-events — final scratch image
+####################################################################################################
+FROM scratch AS argo-events
+ARG ARCH
+COPY --from=base /usr/share/zoneinfo /usr/share/zoneinfo
+COPY --from=base /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=base /usr/local/bin/argo /usr/local/bin/argo
+COPY --from=base /bin/argo-events /bin/argo-events
+ENTRYPOINT [ "/bin/argo-events" ]
